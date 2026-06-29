@@ -136,8 +136,15 @@ def find_mimo_bin():
     return None
 
 
+SYSTEM_DIRECTIVE = (
+    "You are a helpful AI assistant. Answer concisely. "
+    "Do not use bash tools unless absolutely necessary. "
+    "When asked to explain, analyze, or generate text, respond directly without calling tools."
+)
+
 def format_messages(messages):
     parts = []
+    has_system = False
     for msg in messages:
         role = msg.get("role", "user")
         content = msg.get("content", "")
@@ -148,11 +155,14 @@ def format_messages(messages):
                     texts.append(c.get("text", ""))
             content = " ".join(texts)
         if role == "system":
-            parts.append(f"System: {content}")
+            parts.append(f"System: {SYSTEM_DIRECTIVE} {content}")
+            has_system = True
         elif role == "user":
             parts.append(f"User: {content}")
         elif role == "assistant":
             parts.append(f"Assistant: {content}")
+    if not has_system:
+        parts.insert(0, f"System: {SYSTEM_DIRECTIVE}")
     return "\n".join(parts)
 
 
@@ -394,12 +404,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
             # Read stdout with select() — non-blocking, checks deadline every 1s
             deadline = time.time() + timeout
+            first_response_deadline = time.time() + 30  # kill if no text/tool in 30s
             stdout_fd = proc.stdout.fileno()
+            text_or_tool_seen = False
             while True:
                 readable, _, _ = select.select([stdout_fd], [], [], 1.0)
                 if not readable:
-                    if time.time() > deadline:
+                    now = time.time()
+                    if now > deadline:
                         logger.warning(f"Stream timeout, killing PID {proc.pid}")
+                        proc.kill()
+                        break
+                    if not text_or_tool_seen and now > first_response_deadline:
+                        logger.warning(f"No response in 30s, killing PID {proc.pid}")
                         proc.kill()
                         break
                     continue
@@ -417,6 +434,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     # Forward text, reasoning, and tool_use as content chunks
                     if event_type == "text":
                         text_chunk = obj["part"].get("text", "")
+                        text_or_tool_seen = True
                     elif event_type == "reasoning":
                         text_chunk = obj["part"].get("text", "")
                     elif event_type == "tool_use":
@@ -427,6 +445,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             text_chunk = f"\n[tool: {tool_name}]\n{tool_output}\n"
                         else:
                             text_chunk = f"\n[running: {tool_name}]...\n"
+                        text_or_tool_seen = True
                     else:
                         text_chunk = None
 
