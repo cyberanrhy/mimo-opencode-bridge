@@ -1,3 +1,5 @@
+![MiMo — OpenCode Bridge](preview.jpg)
+
 # MiMo — OpenCode Bridge 🚀
 
 **OpenAI-compatible proxy for Xiaomi MiMo free AI models.**  
