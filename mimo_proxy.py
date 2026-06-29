@@ -11,6 +11,8 @@ import re
 import time
 import uuid
 import signal
+import socket
+import select
 import logging
 import threading
 import argparse
@@ -193,8 +195,15 @@ def extract_text_from_output(output):
             continue
         try:
             obj = json.loads(line)
-            if obj.get("type") == "text":
-                text_parts.append(obj["part"]["text"])
+            t = obj.get("type")
+            if t == "text":
+                text_parts.append(obj["part"].get("text", ""))
+            elif t == "reasoning":
+                text_parts.append(obj["part"].get("text", ""))
+            elif t == "tool_use":
+                out = obj.get("part", {}).get("state", {}).get("output", "")
+                if out:
+                    text_parts.append(f"\n[инструмент]\n{out}\n")
         except json.JSONDecodeError:
             pass
     return "".join(text_parts)
@@ -261,6 +270,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, 404)
 
     def do_POST(self):
+        # Disable Nagle's algorithm for real-time SSE
+        try:
+            self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
         path = urlparse(self.path).path
         if path not in ("/v1/chat/completions", "/chat/completions"):
             self._send_json({"error": "not found"}, 404)
@@ -336,6 +350,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if not acquired:
             self._send_json({"error": "server busy, try again"}, 503)
             return
+        proc = None
         try:
             cmd = [mimo_bin, "run", "-m", mapped_model, "--format", "json"]
             env = os.environ.copy()
@@ -355,60 +370,106 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
             self.end_headers()
+            self.wfile.flush()
 
-            chunk_id = 0
             sent_text = ""
+
+            # All chunks in one response share the same ID per OpenAI spec
+            stream_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+            created_ts = int(time.time())
+
+            # Send initial role chunk so client knows connection is alive
+            role_chunk = {
+                "id": stream_id,
+                "object": "chat.completion.chunk",
+                "created": created_ts,
+                "model": model_name,
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+            }
+            self._write_sse(role_chunk)
 
             # Write prompt
             proc.stdin.write(prompt_text.encode("utf-8"))
             proc.stdin.close()
 
-            # Read stdout line by line
+            # Read stdout with select() — non-blocking, checks deadline every 1s
             deadline = time.time() + timeout
-            for line_bytes in iter(proc.stdout.readline, b""):
-                if time.time() > deadline:
-                    logger.warning(f"Stream timeout, killing PID {proc.pid}")
-                    proc.kill()
-                    break
+            stdout_fd = proc.stdout.fileno()
+            while True:
+                readable, _, _ = select.select([stdout_fd], [], [], 1.0)
+                if not readable:
+                    if time.time() > deadline:
+                        logger.warning(f"Stream timeout, killing PID {proc.pid}")
+                        proc.kill()
+                        break
+                    continue
+
+                line_bytes = proc.stdout.readline()
+                if not line_bytes:
+                    break  # EOF
 
                 line = line_bytes.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
                 try:
                     obj = json.loads(line)
-                    if obj.get("type") == "text":
-                        text_chunk = obj["part"]["text"]
-                        if text_chunk:
-                            sent_text += text_chunk
-                            chunk = {
-                                "id": f"chatcmpl-{chunk_id}",
-                                "object": "chat.completion.chunk",
-                                "created": int(time.time()),
-                                "model": model_name,
-                                "choices": [{"index": 0, "delta": {"content": text_chunk}, "finish_reason": None}],
-                            }
-                            chunk_id += 1
-                            self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
-                            self.wfile.flush()
+                    event_type = obj.get("type")
+                    # Forward text, reasoning, and tool_use as content chunks
+                    if event_type == "text":
+                        text_chunk = obj["part"].get("text", "")
+                    elif event_type == "reasoning":
+                        text_chunk = obj["part"].get("text", "")
+                    elif event_type == "tool_use":
+                        tool_input = obj.get("part", {}).get("state", {}).get("input", {})
+                        tool_name = tool_input.get("command", "") if tool_input else ""
+                        tool_output = obj.get("part", {}).get("state", {}).get("output", "")
+                        if tool_output:
+                            text_chunk = f"\n[инструмент: {tool_name}]\n{tool_output}\n"
+                        else:
+                            text_chunk = f"\n[выполняю: {tool_name}]...\n"
+                    else:
+                        text_chunk = None
+
+                    if text_chunk:
+                        sent_text += text_chunk
+                        chunk = {
+                            "id": stream_id,
+                            "object": "chat.completion.chunk",
+                            "created": created_ts,
+                            "model": model_name,
+                            "choices": [{"index": 0, "delta": {"content": text_chunk}, "finish_reason": None}],
+                        }
+                        self._write_sse(chunk)
                 except json.JSONDecodeError:
                     pass
 
             proc.wait(timeout=10)
 
             finish = {
-                "id": f"chatcmpl-{chunk_id}",
+                "id": stream_id,
                 "object": "chat.completion.chunk",
-                "created": int(time.time()),
+                "created": created_ts,
                 "model": model_name,
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
             }
-            self.wfile.write(f"data: {json.dumps(finish, ensure_ascii=False)}\n\n".encode())
-            self.wfile.write("data: [DONE]\n\n".encode())
-            self.wfile.flush()
+            self._write_sse(finish)
+            self._write_raw("data: [DONE]\n\n")
 
             logger.info(f"Streamed {len(sent_text)} chars for model {model_name}")
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            logger.info("Client disconnected, killing subprocess")
         finally:
+            if proc and proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
             request_lock.release()
+
+    def _write_sse(self, chunk):
+        self._write_raw(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n")
+
+    def _write_raw(self, text):
+        self.wfile.write(text.encode())
+        self.wfile.flush()
 
 
 class ThreadedProxyServer(ThreadingMixIn, HTTPServer):
