@@ -251,4 +251,3 @@ MIT
 
 - [Xiaomi MiMo Team](https://mimo.xiaomi.com/coder) for MiMoCode
 - [OpenCode](https://opencode.ai) for the extensible AI platform
-- Inspired by [gemini-web2api](https://github.com/cyberanrhy/gemini-web2api)
