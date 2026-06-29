@@ -231,12 +231,12 @@ mimo-opencode-bridge/
 
 ---
 
-## 🔍 Keywords / Поисковые теги
+## 🔍 Keywords
 
-`xiaomi mimo` `mimo model` `mimocode` `бесплатная нейросеть` `free ai model`  
+`xiaomi mimo` `mimo model` `mimocode` `free ai model`  
 `opencode provider` `opencode custom provider` `opencode mimo`  
 `openai compatible proxy` `ai proxy` `llm proxy`  
-`mimo api` `xiaomi ai` `miмо` `mimo v2.5` `mimo-auto free`  
+`mimo api` `xiaomi ai` `mimo v2.5` `mimo-auto free`  
 `claude code mimo` `continue dev mimo` `cline mimo`
 
 ---

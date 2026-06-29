@@ -203,7 +203,7 @@ def extract_text_from_output(output):
             elif t == "tool_use":
                 out = obj.get("part", {}).get("state", {}).get("output", "")
                 if out:
-                    text_parts.append(f"\n[инструмент]\n{out}\n")
+                    text_parts.append(f"\n[tool]\n{out}\n")
         except json.JSONDecodeError:
             pass
     return "".join(text_parts)
@@ -424,9 +424,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         tool_name = tool_input.get("command", "") if tool_input else ""
                         tool_output = obj.get("part", {}).get("state", {}).get("output", "")
                         if tool_output:
-                            text_chunk = f"\n[инструмент: {tool_name}]\n{tool_output}\n"
+                            text_chunk = f"\n[tool: {tool_name}]\n{tool_output}\n"
                         else:
-                            text_chunk = f"\n[выполняю: {tool_name}]...\n"
+                            text_chunk = f"\n[running: {tool_name}]...\n"
                     else:
                         text_chunk = None
 
