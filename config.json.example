@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/your-username/mimo-opencode-bridge/main/config.schema.json",
+  "port": 12434,
+  "host": "127.0.0.1",
+  "default_model": "mimo-auto",
+  "mimo_bin": "",
+  "timeout": 180,
+  "log_file": "/tmp/mimo-proxy.log",
+  "log_level": "INFO",
+  "api_keys": [],
+  "max_concurrency": 1
+}
